@@ -10,11 +10,11 @@ Vagrant.configure("2") do |config|
   
   config.vm.define "gfd" do |atomic|
     atomic.vm.hostname = "gfd.ictsc"
-    atomic.vm.synced_folder "gfd", "/vagrant"
     atomic.vm.network "private_network", ip: "10.0.1.254"
     atomic.vm.provision "shell",
       run: "always",
       inline: <<-SHELL
+        cp /vagrant/conf/iptables.up.rules /etc/network/
         yes| iptables-apply
       SHELL
   end
