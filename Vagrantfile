@@ -15,7 +15,7 @@ Vagrant.configure("2") do |config|
       run: "always",
       inline: <<-SHELL
         cp /vagrant/conf/iptables.up.rules /etc/network/
-        yes| iptables-apply
+        yes | iptables-apply
       SHELL
   end
 
