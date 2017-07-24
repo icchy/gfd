@@ -16,6 +16,8 @@ Vagrant.configure("2") do |config|
       inline: <<-SHELL
         cp /vagrant/conf/iptables.up.rules /etc/network/
         yes | iptables-apply
+        cd /vagrant/gfd && make && insmod gfd.ko && cd -
+        ln -fs /vagrant/conf/dnsmasq.conf /etc/dnsmasq.conf
       SHELL
   end
 
