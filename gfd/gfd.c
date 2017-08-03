@@ -202,6 +202,14 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
       if(table_push(skb)) {
         printk(KERN_INFO "GFD: failed to push tcp entry\n");
       }
+      // rewrite RST flag
+      tcph->rst = 1;
+      tcph->check = 0;
+      tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
+                                      tcphlen,
+                                      iph->protocol,
+                                      csum_partial(tcph, tcphlen, 0));
+      skb->ip_summed = CHECKSUM_COMPLETE;
     }
   }
 
@@ -284,6 +292,14 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
       if(table_push(skb)) {
         printk(KERN_INFO "GFD: failed to push tcp entry\n");
       }
+      // rewrite RST flag
+      tcph->rst = 1;
+      tcph->check = 0;
+      tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
+                                      tcphlen,
+                                      iph->protocol,
+                                      csum_partial(tcph, tcphlen, 0));
+      skb->ip_summed = CHECKSUM_COMPLETE;
     }
   }
 
