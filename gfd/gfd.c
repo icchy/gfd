@@ -71,7 +71,7 @@ void hexdump(uint8_t *buf, size_t size) {
   printk(KERN_INFO "dump: %s\n", out);
 }
 
-static inline int table_push(struct sk_buff *skb) {
+static int table_push(struct sk_buff *skb) {
   struct iphdr *iph;
   struct tcphdr *tcph;
   struct udphdr *udph;
@@ -110,7 +110,7 @@ static inline int table_push(struct sk_buff *skb) {
   return -1;
 }
 
-static inline uint32_t table_pop(struct sk_buff *skb) {
+static uint32_t table_pop(struct sk_buff *skb) {
   struct iphdr *iph;
   struct tcphdr *tcph;
   struct udphdr *udph;
@@ -149,6 +149,47 @@ static inline uint32_t table_pop(struct sk_buff *skb) {
   return 0;
 }
 
+static int calc_csum(struct sk_buff *skb) {
+  struct iphdr *iph;
+  struct tcphdr *tcph;
+  struct udphdr *udph;
+
+  uint8_t *hdr;
+  uint32_t hdrlen;
+  uint16_t *check;
+
+  if((iph = ip_hdr(skb)) == NULL)
+    return -1;
+
+  hdrlen = ntohs(iph->tot_len) - iph->ihl*4;
+
+  if(iph->protocol == IPPROTO_TCP) {
+    if((tcph = tcp_hdr(skb)) == NULL)
+      return -1;
+    hdr = (uint8_t*)tcph;
+    check = &tcph->check;
+  } else if(iph->protocol == IPPROTO_UDP) {
+    if((udph = udp_hdr(skb)) == NULL)
+      return -1;
+    hdr = (uint8_t*)udph;
+    check = &udph->check;
+  } else {
+    return -1;
+  }
+
+  iph->check = 0;
+  iph->check = ip_fast_csum(iph, iph->ihl);
+
+  *check = 0;
+  *check = csum_tcpudp_magic(iph->saddr, iph->daddr,
+                              hdrlen,
+                              iph->protocol,
+                              csum_partial(hdr, hdrlen, 0));
+  skb->ip_summed = CHECKSUM_COMPLETE;
+
+  return 0;
+}
+
 
 static unsigned handle_hook_src(const struct nf_hook_ops *ops,
     struct sk_buff *skb,
@@ -161,7 +202,7 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
   struct udphdr *udph;
 
   uint8_t *tcpdata;
-  uint32_t tcpdatalen, tcphlen;
+  uint32_t tcpdatalen;
   uint32_t saddr;
 
   // load ip header
@@ -180,21 +221,13 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
   if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
     // check if packet includes "ictsc"
 
-    tcphlen = ntohs(iph->tot_len) - iph->ihl*4;
     tcpdata = (uint8_t *)tcph + tcph->doff*4;
-    tcpdatalen = tcphlen - tcph->doff*4;
+    tcpdatalen = ntohs(iph->tot_len) - (iph->ihl*4 + tcph->doff*4);
 
     if(table_pop(skb)) {
-      printk(KERN_INFO "fuga\n");
-
       // rewrite RST flag
       tcph->rst = 1;
-      tcph->check = 0;
-      tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                      tcphlen,
-                                      iph->protocol,
-                                      csum_partial(tcph, tcphlen, 0));
-      skb->ip_summed = CHECKSUM_COMPLETE;
+      calc_csum(skb);
       return NF_ACCEPT;
     }
 
@@ -204,12 +237,7 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
       }
       // rewrite RST flag
       tcph->rst = 1;
-      tcph->check = 0;
-      tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                      tcphlen,
-                                      iph->protocol,
-                                      csum_partial(tcph, tcphlen, 0));
-      skb->ip_summed = CHECKSUM_COMPLETE;
+      calc_csum(skb);
     }
   }
 
@@ -229,14 +257,7 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
       return NF_ACCEPT;
     }
     iph->saddr = saddr;
-    iph->check = 0;
-    iph->check = ip_fast_csum(iph, iph->ihl);
-    udph->check = 0;
-    udph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                    ntohs(udph->len),
-                                    iph->protocol,
-                                    csum_partial(udph, ntohs(udph->len), 0));
-    skb->ip_summed = CHECKSUM_COMPLETE;
+    calc_csum(skb);
   }
 
   return NF_ACCEPT;
@@ -253,7 +274,7 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
   struct udphdr *udph;
 
   uint8_t *tcpdata;
-  uint32_t tcpdatalen, tcphlen;
+  uint32_t tcpdatalen;
 
   // load ip header
   if((iph = ip_hdr(skb)) == NULL)
@@ -271,20 +292,12 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
   if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
     // check if packet includes "ictsc"
 
-    tcphlen = ntohs(iph->tot_len) - iph->ihl*4;
     tcpdata = (uint8_t *)tcph + tcph->doff*4;
-    tcpdatalen = tcphlen - tcph->doff*4;
+    tcpdatalen = ntohs(iph->tot_len) - (iph->ihl*4 + tcph->doff*4);
 
     if(table_pop(skb)) {
-      printk(KERN_INFO "fuga\n");
       // rewrite RST flag
       tcph->rst = 1;
-      tcph->check = 0;
-      tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                      tcphlen,
-                                      iph->protocol,
-                                      csum_partial(tcph, tcphlen, 0));
-      skb->ip_summed = CHECKSUM_COMPLETE;
       return NF_ACCEPT;
     }
 
@@ -294,12 +307,6 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
       }
       // rewrite RST flag
       tcph->rst = 1;
-      tcph->check = 0;
-      tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                      tcphlen,
-                                      iph->protocol,
-                                      csum_partial(tcph, tcphlen, 0));
-      skb->ip_summed = CHECKSUM_COMPLETE;
     }
   }
 
@@ -344,8 +351,10 @@ int init_module()
   int err;
 
   // init table
-  for(idx = 0; idx < TABLE_SIZE; ++idx)
+  for(idx = 0; idx < TABLE_SIZE; ++idx) {
     table[idx].sport = 0;
+    table[idx].dport = 0;
+  }
   idx = 0;
 
   if((err = nf_register_hook(&hook_src)) < 0) {
