@@ -14,7 +14,7 @@ MODULE_AUTHOR("Ryo ICHIKAWA");
 MODULE_DESCRIPTION("Great firewall daemon");
 MODULE_VERSION("0.1");
 
-#define TABLE_SIZE (1<<10)
+#define TABLE_SIZE (1<<4)
 
 
 typedef struct {
@@ -80,17 +80,20 @@ static inline int table_push(struct sk_buff *skb) {
 
   if((iph = ip_hdr(skb)) == NULL)
     return -1;
-  if((tcph = tcp_hdr(skb)) != NULL) {
+
+  if(iph->protocol == IPPROTO_TCP) {
+    if((tcph = tcp_hdr(skb)) == NULL)
+      return -1;
     sport = tcph->source;
     dport = tcph->dest;
-  }
-  if((udph = udp_hdr(skb)) != NULL) {
+  } else if(iph->protocol == IPPROTO_UDP) {
+    if((udph = udp_hdr(skb)) == NULL)
+      return -1;
     sport = udph->source;
     dport = udph->dest;
-  }
-
-  if(!tcph && !udph)
+  } else {
     return -1;
+  }
 
   while(start != (idx&(TABLE_SIZE-1))) {
     idx &= (TABLE_SIZE-1);
@@ -116,23 +119,28 @@ static inline uint32_t table_pop(struct sk_buff *skb) {
 
   if((iph = ip_hdr(skb)) == NULL)
     return 0;
-  if((tcph = tcp_hdr(skb)) != NULL) {
+
+  if(iph->protocol == IPPROTO_TCP) {
+    if((tcph = tcp_hdr(skb)) == NULL)
+      return 0;
     sport = tcph->source;
     dport = tcph->dest;
-  }
-  if((udph = udp_hdr(skb)) != NULL) {
+  } else if(iph->protocol == IPPROTO_UDP) {
+    if((udph = udp_hdr(skb)) == NULL)
+      return 0;
     sport = udph->source;
     dport = udph->dest;
-  }
-  if(!tcph && !udph)
+  } else {
     return 0;
+  }
 
   for(i = 0; i < TABLE_SIZE; ++i) {
-    if(table[i].protocol == iph->protocol
+    if((table[i].protocol == iph->protocol
         && table[i].saddr == iph->daddr 
-        && table[i].daddr == iph->saddr 
+        && (iph->protocol == IPPROTO_UDP 
+          || table[i].daddr == iph->saddr)
         && table[i].sport == dport
-        && table[i].dport == sport) {
+        && table[i].dport == sport)) {
       table[i].sport = 0;
       table[i].dport = 0;
       return table[i].daddr;
@@ -153,7 +161,7 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
   struct udphdr *udph;
 
   uint8_t *tcpdata;
-  uint32_t tcplen;
+  uint32_t tcpdatalen, tcphlen;
   uint32_t saddr;
 
   // load ip header
@@ -171,10 +179,10 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
 
   if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
     // check if packet includes "ictsc"
-    return NF_ACCEPT;
 
+    tcphlen = ntohs(iph->tot_len) - iph->ihl*4;
     tcpdata = (uint8_t *)tcph + tcph->doff*4;
-    tcplen = ntohs(iph->tot_len) - (iph->ihl*4 + tcph->doff*4);
+    tcpdatalen = tcphlen - tcph->doff*4;
 
     if(table_pop(skb)) {
       printk(KERN_INFO "fuga\n");
@@ -183,14 +191,14 @@ static unsigned handle_hook_src(const struct nf_hook_ops *ops,
       tcph->rst = 1;
       tcph->check = 0;
       tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                      tcplen,
+                                      tcphlen,
                                       iph->protocol,
-                                      csum_partial(tcph, tcplen, 0));
+                                      csum_partial(tcph, tcphlen, 0));
       skb->ip_summed = CHECKSUM_COMPLETE;
       return NF_ACCEPT;
     }
 
-    if(memmem(tcpdata, tcplen, "ictsc", 5) != NULL) {
+    if(memmem(tcpdata, tcpdatalen, "ictsc", 5) != NULL) {
       if(table_push(skb)) {
         printk(KERN_INFO "GFD: failed to push tcp entry\n");
       }
@@ -237,7 +245,7 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
   struct udphdr *udph;
 
   uint8_t *tcpdata;
-  uint32_t tcplen;
+  uint32_t tcpdatalen, tcphlen;
 
   // load ip header
   if((iph = ip_hdr(skb)) == NULL)
@@ -254,10 +262,10 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
 
   if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
     // check if packet includes "ictsc"
-    return NF_ACCEPT;
 
+    tcphlen = ntohs(iph->tot_len) - iph->ihl*4;
     tcpdata = (uint8_t *)tcph + tcph->doff*4;
-    tcplen = ntohs(iph->tot_len) - (iph->ihl*4 + tcph->doff*4);
+    tcpdatalen = tcphlen - tcph->doff*4;
 
     if(table_pop(skb)) {
       printk(KERN_INFO "fuga\n");
@@ -265,14 +273,14 @@ static unsigned handle_hook_dst(const struct nf_hook_ops *ops,
       tcph->rst = 1;
       tcph->check = 0;
       tcph->check = csum_tcpudp_magic(iph->saddr, iph->daddr,
-                                      tcplen,
+                                      tcphlen,
                                       iph->protocol,
-                                      csum_partial(tcph, tcplen, 0));
+                                      csum_partial(tcph, tcphlen, 0));
       skb->ip_summed = CHECKSUM_COMPLETE;
       return NF_ACCEPT;
     }
 
-    if(memmem(tcpdata, tcplen, "ictsc", 5) != NULL) {
+    if(memmem(tcpdata, tcpdatalen, "ictsc", 5) != NULL) {
       if(table_push(skb)) {
         printk(KERN_INFO "GFD: failed to push tcp entry\n");
       }
