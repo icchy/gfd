@@ -1,4 +1,6 @@
 package 'dnsmasq'
+package 'make'
+package 'gcc'
 
 remote_file "/etc/dnsmasq.conf" do
   owner "root"
@@ -14,7 +16,7 @@ end
 remote_file "/etc/network/iptables.up.rules" do
   owner "root"
   group "root"
-  mode 644
+  mode "644"
   source "conf/iptables.up.rules"
 end
 
@@ -26,7 +28,7 @@ end
 remote_file "/etc/sysctl.conf" do
   owner "root"
   group "root"
-  mode 644
+  mode "644"
   source "conf/sysctl.conf"
 end
 
@@ -41,4 +43,10 @@ remote_directory "/home/admin/gfd" do
   mode "755"
   owner "admin"
   group "admin"
+end
+
+execute "load lkm" do
+  user "root"
+  cwd "/home/admin/gfd"
+  command "make && insmod gfd.ko"
 end
