@@ -10,7 +10,7 @@ Vagrant.configure("2") do |config|
   
   config.vm.define "gfd" do |atomic|
     atomic.vm.hostname = "gfd.ictsc"
-    atomic.vm.network "private_network", ip: "10.0.1.254"
+    atomic.vm.network "private_network", ip: "192.168.50.254"
     atomic.vm.provision "shell",
       run: "always",
       inline: <<-SHELL
@@ -26,12 +26,12 @@ Vagrant.configure("2") do |config|
 
   config.vm.define "gfd-client" do |atomic|
     atomic.vm.hostname  = "gfdclient.ictsc"
-    atomic.vm.network "private_network", ip: "10.0.1.10"
+    atomic.vm.network "private_network", ip: "192.168.50.2"
     atomic.vm.provision "shell",
       run: "always",
       inline: <<-SHELL
         route del default
-        route add default gw 10.0.1.254
+        route add default gw 192.168.50.254
         echo nameserver 8.8.8.8 > /etc/resolv.conf
         echo use-vc >> /etc/resolv.conf
       SHELL

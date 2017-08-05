@@ -29,7 +29,7 @@ ENTRY table[TABLE_SIZE];
 int idx;
 
 
-const uint32_t localhost_eth = 0xfe01000a; // 10.0.1.254
+const uint32_t localhost_eth = 0xfe32a8c0; // 192.168.50.254
 const uint32_t localhost = 0x0100007f; // 127.0.0.1
 
 
