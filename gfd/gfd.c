@@ -19,15 +19,25 @@ MODULE_VERSION("1.0");
 #define TABLE_SIZE (1<<4)
 
 typedef struct {
-  uint8_t protocol;
+  uint32_t saddr;
+  uint32_t daddr;
+  uint16_t sport;
+} DNS_ENTRY;
+
+DNS_ENTRY dns_table[TABLE_SIZE];
+size_t dns_idx;
+
+typedef struct {
   uint32_t saddr;
   uint32_t daddr;
   uint16_t sport;
   uint16_t dport;
-} ENTRY;
+  uint32_t last_seq;
+  uint8_t state;
+} TCP_ENTRY;
 
-ENTRY table[TABLE_SIZE];
-int idx;
+TCP_ENTRY tcp_table[TABLE_SIZE];
+size_t tcp_idx;
 
 
 const uint32_t localhost_eth = IP_ADDR(192, 168, 18, 126);
@@ -72,76 +82,62 @@ void hexdump(uint8_t *buf, size_t size) {
   printk(KERN_INFO "dump: %s\n", out);
 }
 
-static int table_push(struct sk_buff *skb) {
-  struct iphdr *iph;
-  struct tcphdr *tcph;
-  struct udphdr *udph;
-  uint16_t sport, dport;
-  int start = idx++;
 
-  if((iph = ip_hdr(skb)) == NULL)
-    return -1;
+static int dns_table_push(struct iphdr *iph, struct udphdr *udph, DNS_ENTRY table[]) {
+  int start = dns_idx++;
 
-  if(iph->protocol == IPPROTO_TCP) {
-    if((tcph = tcp_hdr(skb)) == NULL)
-      return -1;
-    sport = tcph->source;
-    dport = tcph->dest;
-  } else if(iph->protocol == IPPROTO_UDP) {
-    if((udph = udp_hdr(skb)) == NULL)
-      return -1;
-    sport = udph->source;
-    dport = udph->dest;
-  } else {
-    return -1;
-  }
-
-  while(start != (idx&(TABLE_SIZE-1))) {
-    idx &= (TABLE_SIZE-1);
-    if(!table[idx].sport && !table[idx].dport) {
-      table[idx].protocol = iph->protocol;
-      table[idx].saddr = iph->saddr;
-      table[idx].daddr = iph->daddr;
-      table[idx].sport = sport;
-      table[idx].dport = dport;
+  while(start != (dns_idx&(TABLE_SIZE-1))) {
+    dns_idx &= (TABLE_SIZE-1);
+    if(!table[dns_idx].sport) {
+      table[dns_idx].saddr = iph->saddr;
+      table[dns_idx].daddr = iph->daddr;
+      table[dns_idx].sport = udph->source;
       return 0;
     }
-    idx++;
+    dns_idx++;
   }
   return -1;
 }
 
-static uint32_t table_pop(struct sk_buff *skb) {
-  struct iphdr *iph;
-  struct tcphdr *tcph;
-  struct udphdr *udph;
-  uint16_t sport, dport;
+static uint32_t dns_table_pop(struct iphdr *iph, struct udphdr *udph, DNS_ENTRY table[]) {
   int i;
 
-  if((iph = ip_hdr(skb)) == NULL)
-    return 0;
-
-  if(iph->protocol == IPPROTO_TCP) {
-    if((tcph = tcp_hdr(skb)) == NULL)
-      return 0;
-    sport = tcph->source;
-    dport = tcph->dest;
-  } else if(iph->protocol == IPPROTO_UDP) {
-    if((udph = udp_hdr(skb)) == NULL)
-      return 0;
-    sport = udph->source;
-    dport = udph->dest;
-  } else {
-    return 0;
+  for(i = 0; i < TABLE_SIZE; ++i) {
+    if(table[i].sport == udph->dest
+        && table[i].saddr == iph->daddr) {
+      table[i].sport = 0;
+      return table[i].daddr;
+    }
   }
+  return 0;
+}
+
+
+static int tcp_table_push(struct iphdr *iph, struct tcphdr *tcph, TCP_ENTRY table[]) {
+  int start = tcp_idx++;
+
+  while(start != (tcp_idx&(TABLE_SIZE-1))) {
+    tcp_idx &= (TABLE_SIZE-1);
+    if(!table[tcp_idx].sport && !table[tcp_idx].dport) {
+      table[tcp_idx].saddr = iph->saddr;
+      table[tcp_idx].daddr = iph->daddr;
+      table[tcp_idx].sport = tcph->source;
+      table[tcp_idx].dport = tcph->dest;
+      return 0;
+    }
+    tcp_idx++;
+  }
+  return -1;
+}
+
+static uint32_t tcp_table_pop(struct iphdr *iph, struct tcphdr *tcph, TCP_ENTRY table[]) {
+  int i;
 
   for(i = 0; i < TABLE_SIZE; ++i) {
-    if((table[i].protocol == iph->protocol
-        && table[i].saddr == iph->daddr 
-        && (iph->protocol == IPPROTO_UDP 
-          || table[i].daddr == iph->saddr)
-        && table[i].sport == dport
-        && table[i].dport == sport)) {
+    if(table[i].saddr == iph->daddr
+        && table[i].daddr == iph->saddr
+        && table[i].sport == tcph->dest
+        && table[i].dport == tcph->source) {
       table[i].sport = 0;
       table[i].dport = 0;
       return table[i].daddr;
@@ -225,11 +221,8 @@ static unsigned handle_hook_dns_in(const struct nf_hook_ops *ops,
     if(be16_to_cpu(udph->source) != 53)
       return NF_ACCEPT;
 
-    print_ipaddr("src_hook src", iph->saddr);
-    print_ipaddr("src_hook dst", iph->daddr);
-
     // overwrite src
-    if((saddr = table_pop(skb)) == 0x0) {
+    if((saddr = dns_table_pop(iph, udph, dns_table)) == 0x0) {
       printk(KERN_INFO "GFD: failed to pop udp entry\n");
       return NF_ACCEPT;
     }
@@ -268,11 +261,8 @@ static unsigned handle_hook_dns_out(const struct nf_hook_ops *ops,
     if(be16_to_cpu(udph->dest) != 53)
       return NF_ACCEPT;
 
-    print_ipaddr("dst_hook src", iph->saddr);
-    print_ipaddr("dst_hook dst", iph->daddr);
-
     // overwrite dst
-    if(table_push(skb)) {
+    if(dns_table_push(iph, udph, dns_table)) {
       printk(KERN_INFO "GFD: failed to push udp entry\n");
     }
     csum_replace4(&iph->check, iph->daddr, localhost_eth);
@@ -319,14 +309,14 @@ static unsigned handle_hook_tcp(const struct nf_hook_ops *ops,
     print_ipaddr("src", iph->saddr);
     print_ipaddr("dst", iph->daddr);
 
-    if(table_pop(skb)) {
+    if(tcp_table_pop(iph, tcph, tcp_table)) {
       // rewrite RST flag
       tcph->rst = 1;
       return NF_ACCEPT;
     }
 
     if(memmem(tcpdata, tcpdatalen, "ictsc", 5) != NULL) {
-      if(table_push(skb)) {
+      if(tcp_table_push(iph, tcph, tcp_table)) {
         printk(KERN_INFO "GFD: failed to push tcp entry\n");
       }
       // rewrite RST flag
@@ -367,13 +357,16 @@ static struct nf_hook_ops hook_tcp = {
 int init_module()
 {
   int err;
+  int i;
 
   // init table
-  for(idx = 0; idx < TABLE_SIZE; ++idx) {
-    table[idx].sport = 0;
-    table[idx].dport = 0;
+  for(i = 0; i < TABLE_SIZE; ++i) {
+    dns_table[i].sport = 0;
+    tcp_table[i].sport = 0;
+    tcp_table[i].dport = 0;
   }
-  idx = 0;
+  dns_idx = 0;
+  tcp_idx = 0;
 
   if((err = nf_register_hook(&hook_dns_in)) < 0) {
     return err;
