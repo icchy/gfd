@@ -12,10 +12,10 @@
 
 MODULE_AUTHOR("Ryo ICHIKAWA");
 MODULE_DESCRIPTION("Great firewall daemon");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL");
 MODULE_VERSION("1.0");
 
-#define IP_ADDR(o1,o2,o3,o4) ((o4<<24)|(o3<<16)|(o2<<8)|o1)
+#define IP_ADDR(o1,o2,o3,o4) (uint32_t)((o4<<24)|(o3<<16)|(o2<<8)|o1)
 #define TABLE_SIZE (1<<4)
 
 typedef struct {
@@ -286,7 +286,7 @@ static unsigned handle_hook_dns_out(const struct nf_hook_ops *ops,
 
 // TCP hook module
 
-static unsigned handle_hook_tcp_in(const struct nf_hook_ops *ops,
+static unsigned handle_hook_tcp(const struct nf_hook_ops *ops,
     struct sk_buff *skb,
     const struct net_device *in,
     const struct net_device *out,
@@ -307,68 +307,17 @@ static unsigned handle_hook_tcp_in(const struct nf_hook_ops *ops,
   if(iph->version != 4)
     return NF_ACCEPT;
 
-  // allow to localhost
-  if(iph->daddr == localhost_eth || iph->daddr == localhost) {
-    return NF_ACCEPT;
-  }
-
   if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
-    // check if packet includes "ictsc"
-
-    tcpdata = (uint8_t *)tcph + tcph->doff*4;
-    tcpdatalen = ntohs(iph->tot_len) - (iph->ihl*4 + tcph->doff*4);
-
-    if(table_pop(skb)) {
-      // rewrite RST flag
-      tcph->rst = 1;
-      calc_csum(skb);
+    if(be16_to_cpu(tcph->dest) != 10080 && be16_to_cpu(tcph->source) != 10080)
       return NF_ACCEPT;
-    }
 
-    if(memmem(tcpdata, tcpdatalen, "ictsc", 5) != NULL) {
-      if(table_push(skb)) {
-        printk(KERN_INFO "GFD: failed to push tcp entry\n");
-      }
-      // rewrite RST flag
-      tcph->rst = 1;
-      calc_csum(skb);
-    }
-  }
-
-  return NF_ACCEPT;
-}
-
-static unsigned handle_hook_tcp_out(const struct nf_hook_ops *ops,
-    struct sk_buff *skb,
-    const struct net_device *in,
-    const struct net_device *out,
-    int (*okfn)(struct sk_buff*))
-{
-  struct iphdr *iph;
-  struct tcphdr *tcph;
-
-  uint8_t *tcpdata;
-  uint32_t tcpdatalen;
-
-
-  // load ip header
-  if((iph = ip_hdr(skb)) == NULL)
-    return NF_ACCEPT;
-
-  // only IPv4
-  if(iph->version != 4)
-    return NF_ACCEPT;
-
-  // allow from localhost
-  if(iph->saddr == localhost_eth || iph->saddr == localhost) {
-    return NF_ACCEPT;
-  }
-
-  if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
     // check if packet includes "ictsc"
 
     tcpdata = (uint8_t *)tcph + tcph->doff*4;
     tcpdatalen = ntohs(iph->tot_len) - (iph->ihl*4 + tcph->doff*4);
+
+    print_ipaddr("src", iph->saddr);
+    print_ipaddr("dst", iph->daddr);
 
     if(table_pop(skb)) {
       // rewrite RST flag
@@ -405,20 +354,15 @@ static struct nf_hook_ops hook_dns_out = {
   .priority = NF_IP_PRI_FILTER,
 };
 
-static struct nf_hook_ops hook_tcp_in = {
-  .hook = handle_hook_tcp_in,
-  .pf = PF_INET,
-  .hooknum = NF_INET_LOCAL_IN,
-  .priority = NF_IP_PRI_FILTER,
-};
-
-static struct nf_hook_ops hook_tcp_out = {
-  .hook = handle_hook_tcp_out,
+static struct nf_hook_ops hook_tcp = {
+  .hook = handle_hook_tcp,
   .pf = PF_INET,
   .hooknum = NF_INET_FORWARD,
   .priority = NF_IP_PRI_FILTER,
 };
 
+
+// register handler
 
 int init_module()
 {
@@ -439,11 +383,7 @@ int init_module()
     return err;
   }
 
-  if((err = nf_register_hook(&hook_tcp_in)) < 0) {
-    return err;
-  }
-
-  if((err = nf_register_hook(&hook_tcp_out)) < 0) {
+  if((err = nf_register_hook(&hook_tcp)) < 0) {
     return err;
   }
 
@@ -452,12 +392,10 @@ int init_module()
   return 0;
 }
 
-
 void cleanup_module()
 {
   nf_unregister_hook(&hook_dns_in);
   nf_unregister_hook(&hook_dns_out);
-  nf_unregister_hook(&hook_tcp_in);
-  nf_unregister_hook(&hook_tcp_out);
+  nf_unregister_hook(&hook_tcp);
   printk(KERN_INFO "GFD: unloaded\n");
 }
