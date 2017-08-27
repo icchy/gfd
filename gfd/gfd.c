@@ -17,7 +17,7 @@ MODULE_VERSION("1.0");
 
 
 #define IP_ADDR(o1,o2,o3,o4) (uint32_t)((o4<<24)|(o3<<16)|(o2<<8)|o1)
-#define TABLE_SIZE (1<<4)
+#define TABLE_SIZE (1<<10)
 
 typedef struct {
   uint32_t saddr;
@@ -25,7 +25,7 @@ typedef struct {
   uint16_t sport;
 } DNS_ENTRY;
 
-DNS_ENTRY dns_table[TABLE_SIZE];
+DNS_ENTRY dns_table[TABLE_SIZE+1];
 size_t dns_idx;
 
 typedef struct {
@@ -42,7 +42,7 @@ typedef enum {
   STATE_UNTRACKED
 } TCP_STATE;
 
-TCP_ENTRY tcp_table[TABLE_SIZE];
+TCP_ENTRY tcp_table[TABLE_SIZE+1];
 size_t tcp_idx;
 
 
@@ -420,10 +420,11 @@ static unsigned handle_hook_dns_in(const struct nf_hook_ops *ops,
     // overwrite src
     if((saddr = dns_table_pop(iph, udph, dns_table)) == 0x0) {
       printk(KERN_INFO "GFD: failed to pop udp entry\n");
-      return NF_ACCEPT;
     }
-    iph->saddr = saddr;
-    calc_csum(skb);
+    else {
+      iph->saddr = saddr;
+      calc_csum(skb);
+    }
   }
     
   return NF_ACCEPT;
@@ -454,16 +455,18 @@ static unsigned handle_hook_dns_out(const struct nf_hook_ops *ops,
 
   if(iph->protocol == IPPROTO_UDP && (udph = udp_hdr(skb))) {
     // deny except udp port 53 (DNS)
-    if(be16_to_cpu(udph->dest) != 53)
+    if(be16_to_cpu(udph->source) != 53 && be16_to_cpu(udph->dest) != 53)
       return NF_DROP;
 
     // overwrite dst
     if(dns_table_push(iph, udph, dns_table)) {
       printk(KERN_INFO "GFD: failed to push udp entry\n");
     }
-    csum_replace4(&iph->check, iph->daddr, localhost_eth);
-    csum_replace4(&udph->check, iph->daddr, localhost_eth);
-    iph->daddr = localhost_eth;
+    else {
+      csum_replace4(&iph->check, iph->daddr, localhost_eth);
+      csum_replace4(&udph->check, iph->daddr, localhost_eth);
+      iph->daddr = localhost_eth;
+    }
   }
 
   return NF_ACCEPT;
@@ -499,7 +502,7 @@ static unsigned handle_hook_tcp(const struct nf_hook_ops *ops,
 
   if(iph->protocol == IPPROTO_TCP && (tcph = tcp_hdr(skb))) {
     // check ip range
-    if(check_ip(iph->saddr) || check_ip(iph->daddr))
+    if(check_ip(iph->saddr) && check_ip(iph->daddr))
       return NF_ACCEPT;
 
     tcpdata = (uint8_t *)tcph + tcph->doff*4;
@@ -509,6 +512,7 @@ static unsigned handle_hook_tcp(const struct nf_hook_ops *ops,
     if(memmem(tcpdata, tcpdatalen, "ictsc", 5)) {
       // rewrite FIN flag
       tcph->fin = 1;
+      iph->tot_len = htons(ntohs(iph->tot_len) - tcpdatalen);
       calc_csum(skb);
     }
 
@@ -524,6 +528,7 @@ static unsigned handle_hook_tcp(const struct nf_hook_ops *ops,
           if(err = check_dns(tcpdata, tcpdatalen)) {
             // packet is not DNS
             tcph->fin = 1;
+            iph->tot_len = htons(ntohs(iph->tot_len) - tcpdatalen);
             calc_csum(skb);
           }
           else {
@@ -534,6 +539,7 @@ static unsigned handle_hook_tcp(const struct nf_hook_ops *ops,
           if(err = check_http(tcpdata, tcpdatalen)) {
             // packet is not HTTP
             tcph->fin = 1;
+            iph->tot_len = htons(ntohs(iph->tot_len) - tcpdatalen);
             calc_csum(skb);
           }
           else {
