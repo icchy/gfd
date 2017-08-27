@@ -1,3 +1,7 @@
+execute "apt update" do
+  command "apt update"
+end
+
 package 'dnsmasq'
 package 'make'
 package 'gcc'
@@ -23,6 +27,20 @@ end
 execute "apply iptables" do
   user "root"
   command "yes | iptables-apply"
+end
+
+remote_file "/etc/network/if-up.d/iptables" do
+  owner "root"
+  group "root"
+  mode "755"
+  source "conf/iptables_start"
+end
+
+remote_file "/etc/network/if-up.d/routes" do
+  owner "root"
+  group "root"
+  mode "755"
+  source "conf/routes"
 end
 
 remote_file "/etc/sysctl.conf" do
