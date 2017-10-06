@@ -15,6 +15,8 @@ Vagrant.configure("2") do |config|
     atomic.vm.provision "shell",
       run: "always",
       inline: <<-SHELL
+        apt update
+        apt install dnsmasq -y
         cp /vagrant/conf/iptables.up.rules /etc/network/
         yes | iptables-apply
         cp /vagrant/conf/sysctl.conf /etc/
